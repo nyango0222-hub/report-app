@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="報告書" />
+  <title>新津店 報告書ジェネレーター</title>
+  <style>
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    body{margin:0;font-family:"Hiragino Sans","Yu Gothic",system-ui,sans-serif;background:linear-gradient(180deg,#F7F4ED,#EDE6D8);color:#1f2937;min-height:100vh}
+    .wrap{max-width:460px;margin:0 auto;padding:28px 16px 120px}
+    .center{text-align:center}.small{font-size:11px;color:#6b7280;letter-spacing:.22em}.title{font-size:26px;font-weight:800;margin:12px 0 26px}.line{width:36px;height:2px;background:#2D4A5F;margin:0 auto 42px}
+    .menu{width:100%;border:0;border-radius:16px;padding:26px 22px;color:#fff;text-align:left;margin-bottom:14px;box-shadow:0 8px 18px #0002;cursor:pointer}
+    .menu b{display:block;font-size:23px;margin:7px 0}.menu span{font-size:13px;opacity:.82}.blue{background:#2D4A5F}.rose{background:#8B4960}.green{background:#06C755}
+    .card{background:#FBF8F2;border:1px solid #E5DDD0;border-radius:14px;padding:16px;margin-bottom:18px}
+    label{display:block;font-size:13px;color:#6b7280;font-weight:700;margin:16px 0 6px}
+    input,textarea{width:100%;font-size:16px;border:1px solid #E5DDD0;border-radius:10px;background:#fff;padding:12px;outline:none}textarea{line-height:1.7;min-height:110px;resize:vertical}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .section{font-weight:800;border-bottom:1px solid #E5DDD0;padding-bottom:8px;margin:24px 0 8px;font-size:14px}.period{padding:12px;background:#fff;border:1.5px dashed #2D4A5F;border-radius:10px;color:#2D4A5F;text-align:center;font-weight:800;margin-top:10px}.minusrow{display:grid;grid-template-columns:58px 1fr;gap:8px}.minus{height:48px;border-radius:10px;border:1.5px solid #C7544A;background:#C7544A;color:#fff;font-weight:900;font-size:18px}.minus.off{border-color:#E5DDD0;background:#fff;color:#999}.bottom{position:fixed;left:0;right:0;bottom:0;background:#f7f4edee;border-top:1px solid #E5DDD0;padding:12px 16px calc(12px + env(safe-area-inset-bottom))}.bottomin{max-width:460px;margin:0 auto;display:flex;gap:10px}.btn{width:100%;height:56px;border:0;border-radius:14px;color:#fff;font-size:16px;font-weight:800;cursor:pointer}.subbtn{background:#fff;color:#1f2937;border:1.5px solid #1f2937}.back{border:0;background:transparent;color:#2D4A5F;font-weight:800;font-size:15px;margin-bottom:12px}.output{white-space:pre-wrap;background:#FBF8F2;border:1px solid #E5DDD0;border-radius:14px;padding:18px;font-size:15px;line-height:1.9}.status{display:none;margin:12px 0;padding:12px;border-radius:10px;font-weight:800}.ok{display:block;background:#e6f6ec;color:#2f6b45}.err{display:block;background:#fde8e8;color:#991b1b}.hide{display:none}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div id="home">
+    <div class="center"><div class="small">NIITSU STORE ・ 2098</div><div class="title">報告書ジェネレーター</div><div class="line"></div></div>
+    <button class="menu blue" onclick="show('work')"><span>DAILY REPORT</span><b>業務報告</b><span>日次・売上 / 粗利 / 実施事項</span></button>
+    <button class="menu rose" onclick="show('lissage')"><span>WEEKLY REPORT</span><b>リサージ活動報告</b><span>週次・活動実績 / 振り返り</span></button>
+    <div class="card"><b>使い方:</b> 報告種別を選択 → 項目入力 → 文章を生成 → コピー or LINE送信</div>
+  </div>
+
+  <div id="work" class="hide">
+    <button class="back" onclick="show('home')">← 戻る</button><h2>業務報告</h2>
+    <label>基準日（この日の前日まで）</label><input id="workDate" type="date" onchange="updatePeriod()"><div id="period" class="period"></div>
+    <div class="section">売上進捗</div><label>金額</label><div class="minusrow"><button id="salesMinus" class="minus" onclick="toggleMinus('salesMinus')">▲</button><input id="salesAmt" inputmode="numeric" placeholder="3358969"></div><label>達成率（％）</label><input id="salesPct" inputmode="decimal" placeholder="93.58">
+    <div class="section">粗利進捗</div><label>金額</label><div class="minusrow"><button id="profitMinus" class="minus" onclick="toggleMinus('profitMinus')">▲</button><input id="profitAmt" inputmode="numeric" placeholder="636921"></div><label>達成率（％）</label><input id="profitPct" inputmode="decimal" placeholder="93.82">
+    <div class="section">実施したこと</div><textarea id="actions" placeholder="売場巡回メンテ&#10;欠品チェック&#10;前出し"></textarea>
+    <div class="section">その他（任意）</div><textarea id="other" placeholder="追加報告があれば入力"></textarea>
+    <div class="bottom"><div class="bottomin"><button class="btn blue" onclick="makeWork()">文章を生成</button></div></div>
+  </div>
+
+  <div id="lissage" class="hide">
+    <button class="back" onclick="show('home')">← 戻る</button><h2>リサージ活動報告</h2>
+    <div class="row"><div><label>開始日</label><input id="lStart" type="date"></div><div><label>終了日</label><input id="lEnd" type="date"></div></div>
+    <div class="section">期間実績</div><input id="lAmount" inputmode="numeric" placeholder="62549">
+    <div class="section">活動</div><div class="row"><div><label>声掛け</label><input id="voice" inputmode="numeric"></div><div><label>プレ</label><input id="pre" inputmode="numeric"></div><div><label>3AC</label><input id="ac" inputmode="numeric"></div><div><label>スキメン新規</label><input id="skin" inputmode="numeric"></div></div>
+    <div class="section">振り返りと反省</div><textarea id="reflection" placeholder="1行=1項目"></textarea>
+    <div class="section">次週</div><textarea id="next" placeholder="1行=1項目"></textarea>
+    <div class="bottom"><div class="bottomin"><button class="btn rose" onclick="makeLissage()">文章を生成</button></div></div>
+  </div>
+
+  <div id="result" class="hide">
+    <button class="back" onclick="show(last)">← 編集に戻る</button><h2>生成された文章</h2><div id="out" class="output"></div><div id="status" class="status"></div>
+    <div class="bottom"><div class="bottomin"><button class="btn subbtn" onclick="copyText()">コピー</button><button class="btn green" onclick="sendLine()">LINE送信</button></div></div>
+  </div>
+</div>
+<script>
+const GAS_WEBAPP_URL='https://script.google.com/macros/s/AKfycbzPzRWxx2Df5nFwpWxpCfvqVazBOZsu9mHsWmlybmC_bQ6um0P21BT82ue12-gOojrk/exec';
+let last='home', text='';
+const $=id=>document.getElementById(id);
+function show(id){['home','work','lissage','result'].forEach(x=>$(x).classList.add('hide'));$(id).classList.remove('hide');if(id==='work'||id==='lissage')last=id;}
+function md(d){return (d.getMonth()+1)+'/'+d.getDate();}
+function today(){return new Date().toISOString().slice(0,10)}
+function num(v){v=String(v||'').replace(/[,円\s]/g,'');if(!v)return '';let n=Number(v);return isNaN(n)?v:n.toLocaleString('ja-JP')}
+function pct(v){v=String(v||'').replace(/[％%\s]/g,'');return v?v+'％':''}
+function bullet(v){return String(v||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>x.startsWith('・')?x:'・'+x).join('\n')}
+function lines(v){return String(v||'').split('\n').map(x=>x.trim()).filter(Boolean).join('\n')}
+function toggleMinus(id){$(id).classList.toggle('off')}
+function periodText(){let v=$('workDate').value;if(!v)return '';let b=new Date(v+'T00:00:00'),s,e;if(b.getDate()===1){s=new Date(b.getFullYear(),b.getMonth()-1,1);e=new Date(b.getFullYear(),b.getMonth(),0)}else{s=new Date(b.getFullYear(),b.getMonth(),1);e=new Date(b);e.setDate(e.getDate()-1)}return md(s)+'-'+md(e)+'まで'}
+function updatePeriod(){$('period').textContent='期間: '+periodText()}
+function makeWork(){let s=$('salesMinus').classList.contains('off')?'':'▲',p=$('profitMinus').classList.contains('off')?'':'▲';let arr=['お疲れ様です。','本日分業務報告です。',periodText(),'売上進捗：'+s+num($('salesAmt').value)+'円　'+pct($('salesPct').value),'粗利進捗：'+p+num($('profitAmt').value)+'円　'+pct($('profitPct').value),'実施したこと',bullet($('actions').value)];let o=lines($('other').value);if(o)arr.push('【その他】',o);arr.push('以上ご多用のところ恐れ入りますがご確認お願いします。');text=arr.filter(Boolean).join('\n');$('out').textContent=text;show('result')}
+function makeLissage(){let s=new Date($('lStart').value+'T00:00:00'),e=new Date($('lEnd').value+'T00:00:00');text=['リサージ活動報告です。',md(s)+'〜'+md(e),'期間実績'+num($('lAmount').value)+'円','【活動】','声掛け'+($('voice').value||0)+'人','プレ'+($('pre').value||0)+'人','3AC'+($('ac').value||0)+'人','スキメン新規'+($('skin').value||0)+'人','【振り返りと反省】',bullet($('reflection').value),'【次週】',bullet($('next').value)].join('\n');$('out').textContent=text;show('result')}
+async function copyText(){try{await navigator.clipboard.writeText(text);status('コピーしました','ok')}catch(e){status('コピーできませんでした','err')}}
+async function sendLine(){status('LINEへ送信中です','ok');try{await fetch(GAS_WEBAPP_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({text})});status('LINE送信しました','ok')}catch(e){status('送信に失敗しました','err')}}
+function status(m,c){$('status').textContent=m;$('status').className='status '+c}
+(function init(){let t=today();$('workDate').value=t;$('lEnd').value=t;let d=new Date();d.setDate(d.getDate()-4);$('lStart').value=d.toISOString().slice(0,10);updatePeriod()})();
+</script>
+</body>
+</html>
