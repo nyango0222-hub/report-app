@@ -623,16 +623,15 @@
                   <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
                     売上予実の画面写真を選ぶと、売上・粗利の予実差と予実比を自動で入れます（売上側・粗利側の2枚でも、まとめて1枚でもOK）。写真は端末の中で処理され、外部には送られません。送信前に、画面の数字と合っているか必ず見比べてください。
                   </div>
-                  <button type="button" disabled={ocrBusy}
-                    onClick={() => { if (ocrFileRef.current) ocrFileRef.current.click(); }}
-                    style={{
-                      width: '100%', padding: '13px 18px', background: ocrBusy ? C.inkSoft : C.navy,
-                      color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                  <label style={{
+                      display: 'block', width: '100%', padding: '13px 18px', boxSizing: 'border-box',
+                      background: ocrBusy ? C.inkSoft : C.navy, color: '#fff', borderRadius: 10,
+                      fontSize: 15, fontWeight: 700, textAlign: 'center', cursor: 'pointer',
                     }}>
                     {ocrBusy ? '読み取り中…' : '写真を選ぶ'}
-                  </button>
-                  <input ref={ocrFileRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
-                    onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) runPhotoOcr(fs); }} />
+                    <input type="file" accept="image/*" multiple style={{ display: 'none' }} disabled={ocrBusy}
+                      onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) runPhotoOcr(fs); }} />
+                  </label>
                   {ocrStatus && (
                     <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{ocrStatus}</div>
                   )}
@@ -667,16 +666,15 @@
                   <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
                     日次生産性管理シートの写真を選ぶと、5つの指標の予算・実績を自動で入れます。達成・未達は自動で判定します（労働時間は実績が予算以下で達成）。写真は端末の中で処理され、外部には送られません。
                   </div>
-                  <button type="button" disabled={prodBusy}
-                    onClick={() => { if (prodFileRef.current) prodFileRef.current.click(); }}
-                    style={{
-                      width: '100%', padding: '13px 18px', background: prodBusy ? C.inkSoft : C.navy,
-                      color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                  <label style={{
+                      display: 'block', width: '100%', padding: '13px 18px', boxSizing: 'border-box',
+                      background: prodBusy ? C.inkSoft : C.navy, color: '#fff', borderRadius: 10,
+                      fontSize: 15, fontWeight: 700, textAlign: 'center', cursor: 'pointer',
                     }}>
                     {prodBusy ? '読み取り中…' : '写真を選ぶ'}
-                  </button>
-                  <input ref={prodFileRef} type="file" accept="image/*" style={{ display: 'none' }}
-                    onChange={(e) => { const f = (e.target.files || [])[0]; e.target.value = ''; if (f) runProdOcr(f); }} />
+                    <input type="file" accept="image/*" style={{ display: 'none' }} disabled={prodBusy}
+                      onChange={(e) => { const f = (e.target.files || [])[0]; e.target.value = ''; if (f) runProdOcr(f); }} />
+                  </label>
                   {prodStatus && (
                     <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{prodStatus}</div>
                   )}
