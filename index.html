@@ -27,11 +27,12 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useMemo, useEffect } = React;
+    const { useState, useMemo, useEffect, useRef } = React;
 
     // ============================================================
     // localStorage ヘルパー（自動保存・復元）
@@ -80,6 +81,95 @@
     };
     const todayStr = () => new Date().toISOString().split('T')[0];
 
+
+    // ============================================================
+    // 写真OCR（売上予実画面の読み取り）
+    // ============================================================
+    // OCRテキストから金額（カンマ区切り）と％を出現順に取り出す
+    const extractNums = (text) => {
+      const t = String(text || '')
+        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/，/g, ',').replace(/．/g, '.');
+      const amounts = [];
+      const aRe = /\d{1,3}(?:,\d{3})+|\d{4,}/g;
+      let m;
+      while ((m = aRe.exec(t)) !== null) {
+        const v = parseInt(m[0].replace(/,/g, ''), 10);
+        if (!isNaN(v)) amounts.push({ v, i: m.index });
+      }
+      const percents = [];
+      const pRe = /(\d{1,3}\.\d{1,2})\s*%/g;
+      while ((m = pRe.exec(t)) !== null) {
+        percents.push({ v: parseFloat(m[1]), raw: m[1], i: m.index });
+      }
+      return { amounts, percents };
+    };
+
+    // 金額列から「実績・予実差・予実比」の組を探す。
+    // 予実比 = 実績 / 予算、予算 = 実績 - 予実差、の関係で照合する。
+    // 逆算した予算が金額列にも載っている組を「売上側」、載っていない組を「粗利側」と判定する。
+    const findTriples = (text) => {
+      const { amounts, percents } = extractNums(text);
+      const best = {};
+      for (let a = 0; a < amounts.length; a++) {
+        for (let b = 0; b < amounts.length; b++) {
+          if (b === a) continue;
+          const actual = amounts[a].v, diffAbs = amounts[b].v;
+          if (actual <= 0 || diffAbs <= 0 || diffAbs >= actual) continue;
+          for (const sgn of [-1, 1]) {
+            const diff = sgn * diffAbs;
+            const budget = actual - diff;
+            if (budget <= 0) continue;
+            const ratio = actual / budget * 100;
+            for (const p of percents) {
+              const err = Math.abs(p.v - ratio);
+              if (err > 0.02) continue;
+              const side = amounts.some((x) => x.v === budget) ? 'sales' : 'profit';
+              if (!best[side] || err < best[side].err) {
+                best[side] = { actual, diff, percent: p.raw, err };
+              }
+            }
+          }
+        }
+      }
+      // 売上側の数字の組み合わせ違いでできた粗利候補を除く
+      // （粗利の実績が売上の予算と一致する／予実差が売上と同一、の場合は売上の誤検出）
+      if (best.sales && best.profit) {
+        const sBudget = best.sales.actual - best.sales.diff;
+        if (best.profit.actual === sBudget || best.profit.diff === best.sales.diff) {
+          delete best.profit;
+        }
+      }
+      return best;
+    };
+
+
+    // 日次生産性シートのOCRテキストから、5指標×（予算・実績）の10個の数字を取り出す。
+    // 「売上高÷労働時間≒人時売上高」「POS粗利÷労働時間≒人時生産性」の関係で照合し、
+    // グラフの目盛りなどの紛らわしい数字を除外する。
+    const extractProductivity = (text) => {
+      const t = String(text || '')
+        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/，/g, ',');
+      const vals = [];
+      const re = /\d{1,3}(?:,\d{3})+|\d{3,}/g;
+      let m;
+      while ((m = re.exec(t)) !== null) {
+        const v = parseInt(m[0].replace(/,/g, ''), 10);
+        if (!isNaN(v)) vals.push(v);
+      }
+      const near = (x, y) => Math.abs(x - y) <= y * 0.004 + 2;
+      for (let i = 0; i + 10 <= vals.length; i++) {
+        const w = vals.slice(i, i + 10);
+        if (w[8] <= 0 || w[9] <= 0) continue;
+        if (near(w[4] / w[8], w[0]) && near(w[5] / w[9], w[1]) &&
+            near(w[6] / w[8], w[2]) && near(w[7] / w[9], w[3])) {
+          return w;
+        }
+      }
+      return null;
+    };
+
     // ============================================================
     // メインアプリ
     // ============================================================
@@ -110,6 +200,141 @@
       const [workActions, setWorkActions] = useState(savedWork.workActions || '');
       const [workOther, setWorkOther] = useState(savedWork.workOther || '');
 
+      // 写真OCR（業務報告の売上・粗利）
+      const ocrFileRef = useRef(null);
+      const [ocrBusy, setOcrBusy] = useState(false);
+      const [ocrStatus, setOcrStatus] = useState('');
+
+      const runPhotoOcr = async (files) => {
+        if (!window.Tesseract) {
+          setOcrStatus('読み取り用の部品を読み込めませんでした。通信環境を確認して、ページを開き直してください。');
+          return;
+        }
+        setOcrBusy(true);
+        setOcrStatus('読み取り中…（初回は少し時間がかかります）');
+        let worker = null;
+        const results = {};
+        let failed = false;
+        try {
+          worker = await Tesseract.createWorker('eng');
+          await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-' });
+          for (const file of files) {
+            const url = URL.createObjectURL(file);
+            try {
+              const img = await new Promise((res, rej) => {
+                const im = new Image();
+                im.onload = () => res(im);
+                im.onerror = rej;
+                im.src = url;
+              });
+              const scale = Math.min(1, 1600 / (img.naturalWidth || 1600));
+              const cv = document.createElement('canvas');
+              cv.width = Math.round(img.naturalWidth * scale);
+              cv.height = Math.round(img.naturalHeight * scale);
+              cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+              const { data } = await worker.recognize(cv);
+              const triples = findTriples(data.text || '');
+              for (const side of ['sales', 'profit']) {
+                if (triples[side] && !results[side]) results[side] = triples[side];
+              }
+            } finally {
+              URL.revokeObjectURL(url);
+            }
+          }
+        } catch (e) {
+          failed = true;
+        } finally {
+          if (worker) { try { await worker.terminate(); } catch (e) {} }
+        }
+        if (results.sales) {
+          setSalesAmount(String(Math.abs(results.sales.diff)));
+          setSalesIsMinus(results.sales.diff < 0);
+          setSalesPercent(results.sales.percent);
+        }
+        if (results.profit) {
+          setProfitAmount(String(Math.abs(results.profit.diff)));
+          setProfitIsMinus(results.profit.diff < 0);
+          setProfitPercent(results.profit.percent);
+        }
+        const lines = [];
+        if (results.sales) lines.push(`売上進捗：${results.sales.diff < 0 ? '▲' : ''}${fmtNum(Math.abs(results.sales.diff))}円　${results.sales.percent}％`);
+        if (results.profit) lines.push(`粗利進捗：${results.profit.diff < 0 ? '▲' : ''}${fmtNum(Math.abs(results.profit.diff))}円　${results.profit.percent}％`);
+        if (lines.length) {
+          setOcrStatus('読み取りました。画面の数字と合っているか見比べてください。\n' + lines.join('\n'));
+        } else if (failed) {
+          setOcrStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
+        } else {
+          setOcrStatus('数字を読み取れませんでした。画面いっぱいに大きく撮るか、手入力してください。');
+        }
+        setOcrBusy(false);
+      };
+
+      // 日次生産性（前日分）
+      const [dPerSalesB, setDPerSalesB] = useState(savedWork.dPerSalesB || '');
+      const [dPerSalesA, setDPerSalesA] = useState(savedWork.dPerSalesA || '');
+      const [dPerProfitB, setDPerProfitB] = useState(savedWork.dPerProfitB || '');
+      const [dPerProfitA, setDPerProfitA] = useState(savedWork.dPerProfitA || '');
+      const [dSalesB, setDSalesB] = useState(savedWork.dSalesB || '');
+      const [dSalesA, setDSalesA] = useState(savedWork.dSalesA || '');
+      const [dProfitB, setDProfitB] = useState(savedWork.dProfitB || '');
+      const [dProfitA, setDProfitA] = useState(savedWork.dProfitA || '');
+      const [dHoursB, setDHoursB] = useState(savedWork.dHoursB || '');
+      const [dHoursA, setDHoursA] = useState(savedWork.dHoursA || '');
+      const prodFileRef = useRef(null);
+      const [prodBusy, setProdBusy] = useState(false);
+      const [prodStatus, setProdStatus] = useState('');
+
+      const runProdOcr = async (file) => {
+        if (!window.Tesseract) {
+          setProdStatus('読み取り用の部品を読み込めませんでした。通信環境を確認して、ページを開き直してください。');
+          return;
+        }
+        setProdBusy(true);
+        setProdStatus('読み取り中…（初回は少し時間がかかります）');
+        let worker = null;
+        let vals = null;
+        let failed = false;
+        try {
+          worker = await Tesseract.createWorker('eng');
+          await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-' });
+          const url = URL.createObjectURL(file);
+          try {
+            const img = await new Promise((res, rej) => {
+              const im = new Image();
+              im.onload = () => res(im);
+              im.onerror = rej;
+              im.src = url;
+            });
+            const scale = Math.min(1, 2000 / (img.naturalWidth || 2000));
+            const cv = document.createElement('canvas');
+            cv.width = Math.round(img.naturalWidth * scale);
+            cv.height = Math.round(img.naturalHeight * scale);
+            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+            const { data } = await worker.recognize(cv);
+            vals = extractProductivity(data.text || '');
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) {
+          failed = true;
+        } finally {
+          if (worker) { try { await worker.terminate(); } catch (e) {} }
+        }
+        if (vals) {
+          setDPerSalesB(String(vals[0])); setDPerSalesA(String(vals[1]));
+          setDPerProfitB(String(vals[2])); setDPerProfitA(String(vals[3]));
+          setDSalesB(String(vals[4])); setDSalesA(String(vals[5]));
+          setDProfitB(String(vals[6])); setDProfitA(String(vals[7]));
+          setDHoursB(String(vals[8])); setDHoursA(String(vals[9]));
+          setProdStatus('読み取りました。画面の数字と合っているか見比べてください。');
+        } else if (failed) {
+          setProdStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
+        } else {
+          setProdStatus('数字を読み取れませんでした。表が大きく写るように撮るか、手入力してください。');
+        }
+        setProdBusy(false);
+      };
+
       // リサージ（前回データがあれば復元）
       const [lStartDate, setLStartDate] = useState(savedLissage.lStartDate || todayStr());
       const [lEndDate, setLEndDate] = useState(savedLissage.lEndDate || todayStr());
@@ -126,9 +351,13 @@
         saveLS(LS_WORK, {
           workBaseDate, salesAmount, salesIsMinus, salesPercent,
           profitAmount, profitIsMinus, profitPercent, workActions, workOther,
+          dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA,
+          dProfitB, dProfitA, dHoursB, dHoursA,
         });
       }, [workBaseDate, salesAmount, salesIsMinus, salesPercent,
-          profitAmount, profitIsMinus, profitPercent, workActions, workOther]);
+          profitAmount, profitIsMinus, profitPercent, workActions, workOther,
+          dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA,
+          dProfitB, dProfitA, dHoursB, dHoursA]);
 
       // リサージデータを自動保存
       useEffect(() => {
@@ -145,6 +374,10 @@
         setSalesAmount(''); setSalesIsMinus(true); setSalesPercent('');
         setProfitAmount(''); setProfitIsMinus(true); setProfitPercent('');
         setWorkActions(''); setWorkOther('');
+        setDPerSalesB(''); setDPerSalesA(''); setDPerProfitB(''); setDPerProfitA('');
+        setDSalesB(''); setDSalesA(''); setDProfitB(''); setDProfitA('');
+        setDHoursB(''); setDHoursA('');
+        setOcrStatus(''); setProdStatus('');
         clearLS(LS_WORK);
       };
 
@@ -172,6 +405,30 @@
         return { start, end };
       }, [workBaseDate]);
 
+      // 日次生産性ブロック（10項目すべて入っているときだけ生成）
+      const buildProductivityText = () => {
+        if (!workPeriod) return '';
+        const raw = [dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA, dProfitB, dProfitA, dHoursB, dHoursA];
+        const nums = raw.map((s) => parseInt(String(s).replace(/,/g, ''), 10));
+        if (nums.some((n) => isNaN(n))) return '';
+        const judge = (b, a, lowerBetter) => ((lowerBetter ? a <= b : a >= b) ? '達成！' : '未達');
+        const wd = ['日', '月', '火', '水', '木', '金', '土'][workPeriod.end.getDay()];
+        const lines = [
+          `(前日)日次生産性-${fmtMD(workPeriod.end)}(${wd})`,
+          '【人時売上高】',
+          `予算${fmtNum(nums[0])}円　実績${fmtNum(nums[1])}円　${judge(nums[0], nums[1], false)}`,
+          '【人時生産性】',
+          `予算${fmtNum(nums[2])}円　実績${fmtNum(nums[3])}円　${judge(nums[2], nums[3], false)}`,
+          '【売上高】',
+          `予算${fmtNum(nums[4])}円　実績${fmtNum(nums[5])}円　${judge(nums[4], nums[5], false)}`,
+          '【POS粗利】',
+          `予算${fmtNum(nums[6])}円　実績${fmtNum(nums[7])}円　${judge(nums[6], nums[7], false)}`,
+          '【労働時間】',
+          `予算${fmtNum(nums[8])}時間　実績${fmtNum(nums[9])}時間　${judge(nums[8], nums[9], true)}`,
+        ];
+        return lines.join('\n');
+      };
+
       // 文章生成
       const generateWork = () => {
         if (!workPeriod) return '';
@@ -180,9 +437,11 @@
         const pP = profitIsMinus ? '▲' : '';
         const acts = workActions.split('\n').map(l => l.trim()).filter(Boolean).map(l => `・${l}`).join('\n');
         let t = `お疲れ様です。\n本日分業務報告です。\n${period}\n売上進捗：${sP}${fmtNum(salesAmount)}円　${salesPercent}％\n粗利進捗：${pP}${fmtNum(profitAmount)}円　${profitPercent}％\n実施したこと\n${acts}`;
+        const prodText = buildProductivityText();
+        if (prodText) t += `\n\n${prodText}`;
         if (workOther.trim()) {
           const o = workOther.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
-          t += `\n【その他】\n${o}`;
+          t += `\n\n【その他】\n${o}`;
         }
         t += `\n以上ご多用のところ恐れ入りますがご確認お願いします。`;
         return t;
@@ -356,6 +615,29 @@
                   )}
                 </div>
 
+                                <div style={{
+                  marginBottom: 22, padding: '14px 16px', background: '#fff',
+                  border: `1.5px dashed ${C.navy}`, borderRadius: 10,
+                }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginBottom: 6 }}>📷 写真から読み取る</div>
+                  <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
+                    売上予実の画面写真を選ぶと、売上・粗利の予実差と予実比を自動で入れます（売上側・粗利側の2枚でも、まとめて1枚でもOK）。写真は端末の中で処理され、外部には送られません。送信前に、画面の数字と合っているか必ず見比べてください。
+                  </div>
+                  <button type="button" disabled={ocrBusy}
+                    onClick={() => { if (ocrFileRef.current) ocrFileRef.current.click(); }}
+                    style={{
+                      width: '100%', padding: '13px 18px', background: ocrBusy ? C.inkSoft : C.navy,
+                      color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                    }}>
+                    {ocrBusy ? '読み取り中…' : '写真を選ぶ'}
+                  </button>
+                  <input ref={ocrFileRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
+                    onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) runPhotoOcr(fs); }} />
+                  {ocrStatus && (
+                    <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{ocrStatus}</div>
+                  )}
+                </div>
+
                 <div style={sectionTitle()}>売上進捗</div>
                 <NumberRow label="金額" value={salesAmount} onChange={setSalesAmount}
                   isMinus={salesIsMinus} onToggleMinus={() => setSalesIsMinus(!salesIsMinus)}
@@ -375,6 +657,46 @@
                   <input type="text" inputMode="decimal" value={profitPercent}
                     onChange={(e) => setProfitPercent(e.target.value)} style={inputStyle} placeholder="93.82" />
                 </div>
+
+                                <div style={sectionTitle({ marginTop: 26 })}>日次生産性（前日分）</div>
+                <div style={{
+                  marginBottom: 14, padding: '14px 16px', background: '#fff',
+                  border: `1.5px dashed ${C.navy}`, borderRadius: 10,
+                }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginBottom: 6 }}>📷 写真から読み取る</div>
+                  <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
+                    日次生産性管理シートの写真を選ぶと、5つの指標の予算・実績を自動で入れます。達成・未達は自動で判定します（労働時間は実績が予算以下で達成）。写真は端末の中で処理され、外部には送られません。
+                  </div>
+                  <button type="button" disabled={prodBusy}
+                    onClick={() => { if (prodFileRef.current) prodFileRef.current.click(); }}
+                    style={{
+                      width: '100%', padding: '13px 18px', background: prodBusy ? C.inkSoft : C.navy,
+                      color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                    }}>
+                    {prodBusy ? '読み取り中…' : '写真を選ぶ'}
+                  </button>
+                  <input ref={prodFileRef} type="file" accept="image/*" style={{ display: 'none' }}
+                    onChange={(e) => { const f = (e.target.files || [])[0]; e.target.value = ''; if (f) runProdOcr(f); }} />
+                  {prodStatus && (
+                    <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{prodStatus}</div>
+                  )}
+                </div>
+                {[
+                  ['人時売上高', dPerSalesB, setDPerSalesB, dPerSalesA, setDPerSalesA, '円'],
+                  ['人時生産性', dPerProfitB, setDPerProfitB, dPerProfitA, setDPerProfitA, '円'],
+                  ['売上高', dSalesB, setDSalesB, dSalesA, setDSalesA, '円'],
+                  ['POS粗利', dProfitB, setDProfitB, dProfitA, setDProfitA, '円'],
+                  ['労働時間', dHoursB, setDHoursB, dHoursA, setDHoursA, '時間'],
+                ].map(([label, b, setB, a, setA, unit]) => (
+                  <div key={label} style={{ marginBottom: 10 }}>
+                    <label style={labelStyle}>{label}（{unit}）</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input type="text" inputMode="numeric" value={b} onChange={(e) => setB(e.target.value)} style={inputStyle} placeholder="予算" />
+                      <input type="text" inputMode="numeric" value={a} onChange={(e) => setA(e.target.value)} style={inputStyle} placeholder="実績" />
+                    </div>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: C.inkSoft }}>10項目すべて入ると、文章に日次生産性のブロックが入ります。</div>
 
                 <div style={sectionTitle({ marginTop: 26 })}>実施したこと</div>
                 <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>1行=1項目（「・」は自動付与）</div>
