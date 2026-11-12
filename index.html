@@ -185,7 +185,18 @@
         const fails = c.map((ok, j) => ok ? -1 : j).filter((j) => j >= 0);
         if (fails.length === 1) {
           const pos = fails[0];
-          for (const cand of repairs(w[pos])) {
+          // 直し方の候補：先頭の桁落ちを戻す／1桁だけ別の数字に置き換える（例：18501→16501）
+          const candSet = new Set(repairs(w[pos]));
+          const s = String(w[pos]);
+          for (let i = 0; i < s.length; i++) {
+            for (let d = 0; d <= 9; d++) {
+              if (String(d) === s[i]) continue;
+              const ns = s.slice(0, i) + d + s.slice(i + 1);
+              if (ns[0] === '0') continue;
+              candSet.add(parseInt(ns, 10));
+            }
+          }
+          for (const cand of candSet) {
             const w2 = w.slice();
             w2[pos] = cand;
             if (checksFor(w2).every(Boolean)) return w2;
