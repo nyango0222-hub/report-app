@@ -159,15 +159,54 @@
         if (!isNaN(v)) vals.push(v);
       }
       const near = (x, y) => Math.abs(x - y) <= y * 0.004 + 2;
+      const checksFor = (w) => [
+        near(w[4] / w[8], w[0]),
+        near(w[5] / w[9], w[1]),
+        near(w[6] / w[8], w[2]),
+        near(w[7] / w[9], w[3]),
+      ];
+      // 先頭の桁が読み落ちた数字（例：3,462→462）を、関係式が合う形に直す候補
+      const repairs = (v) => {
+        const out = [];
+        const s = String(v);
+        for (let d = 1; d <= 9; d++) out.push(d * Math.pow(10, s.length) + v);
+        return out;
+      };
       for (let i = 0; i + 10 <= vals.length; i++) {
         const w = vals.slice(i, i + 10);
         if (w[8] <= 0 || w[9] <= 0) continue;
-        if (near(w[4] / w[8], w[0]) && near(w[5] / w[9], w[1]) &&
-            near(w[6] / w[8], w[2]) && near(w[7] / w[9], w[3])) {
-          return w;
+        const c = checksFor(w);
+        if (c.every(Boolean)) return w;
+        const fails = c.map((ok, j) => ok ? -1 : j).filter((j) => j >= 0);
+        if (fails.length === 1) {
+          const pos = fails[0];
+          for (const cand of repairs(w[pos])) {
+            const w2 = w.slice();
+            w2[pos] = cand;
+            if (checksFor(w2).every(Boolean)) return w2;
+          }
         }
       }
       return null;
+    };
+
+    // 写真をOCR向けに整える（幅をそろえてグレースケール化、必要なら白黒化）
+    const makeOcrCanvas = (img, targetW, binarize) => {
+      const scale = targetW / (img.naturalWidth || targetW);
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * scale);
+      cv.height = Math.round(img.naturalHeight * scale);
+      const ctx = cv.getContext('2d');
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      const id = ctx.getImageData(0, 0, cv.width, cv.height);
+      const d = id.data;
+      for (let i = 0; i < d.length; i += 4) {
+        let g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        if (binarize) g = g > 170 ? 255 : 0;
+        d[i] = g; d[i + 1] = g; d[i + 2] = g;
+      }
+      ctx.putImageData(id, 0, 0);
+      return cv;
     };
 
     // ============================================================
@@ -215,35 +254,48 @@
         let worker = null;
         const results = {};
         let failed = false;
+        const loaded = [];
         try {
           worker = await Tesseract.createWorker('eng');
-          await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-' });
           for (const file of files) {
             const url = URL.createObjectURL(file);
-            try {
-              const img = await new Promise((res, rej) => {
-                const im = new Image();
-                im.onload = () => res(im);
-                im.onerror = rej;
-                im.src = url;
-              });
-              const scale = Math.min(1, 1600 / (img.naturalWidth || 1600));
-              const cv = document.createElement('canvas');
-              cv.width = Math.round(img.naturalWidth * scale);
-              cv.height = Math.round(img.naturalHeight * scale);
-              cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-              const { data } = await worker.recognize(cv);
+            const img = await new Promise((res, rej) => {
+              const im = new Image();
+              im.onload = () => res(im);
+              im.onerror = rej;
+              im.src = url;
+            });
+            loaded.push({ img, url });
+          }
+          const runPass = async (makeCanvas, psm) => {
+            await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: psm });
+            for (const { img } of loaded) {
+              if (results.sales && results.profit) break;
+              const { data } = await worker.recognize(makeCanvas(img));
               const triples = findTriples(data.text || '');
               for (const side of ['sales', 'profit']) {
                 if (triples[side] && !results[side]) results[side] = triples[side];
               }
-            } finally {
-              URL.revokeObjectURL(url);
             }
+          };
+          // 1回目：そのままの色で読む
+          await runPass((img) => {
+            const scale = Math.min(1, 1600 / (img.naturalWidth || 1600));
+            const cv = document.createElement('canvas');
+            cv.width = Math.round(img.naturalWidth * scale);
+            cv.height = Math.round(img.naturalHeight * scale);
+            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+            return cv;
+          }, '3');
+          // 2回目：拡大＋グレースケールで読む（取りこぼしがあるときだけ）
+          if (!results.sales || !results.profit) {
+            setOcrStatus('読み取り中…（別の方法でもう一度読み取っています）');
+            await runPass((img) => makeOcrCanvas(img, 2600, false), '11');
           }
         } catch (e) {
           failed = true;
         } finally {
+          for (const { url } of loaded) URL.revokeObjectURL(url);
           if (worker) { try { await worker.terminate(); } catch (e) {} }
         }
         if (results.sales) {
@@ -296,7 +348,6 @@
         let failed = false;
         try {
           worker = await Tesseract.createWorker('eng');
-          await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-' });
           const url = URL.createObjectURL(file);
           try {
             const img = await new Promise((res, rej) => {
@@ -305,13 +356,13 @@
               im.onerror = rej;
               im.src = url;
             });
-            const scale = Math.min(1, 2000 / (img.naturalWidth || 2000));
-            const cv = document.createElement('canvas');
-            cv.width = Math.round(img.naturalWidth * scale);
-            cv.height = Math.round(img.naturalHeight * scale);
-            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-            const { data } = await worker.recognize(cv);
-            vals = extractProductivity(data.text || '');
+            // 拡大＋グレースケール＋白黒化で読む。ダメなら白黒化なしでも試す
+            for (const binarize of [true, false]) {
+              await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: '11' });
+              const { data } = await worker.recognize(makeOcrCanvas(img, 2600, binarize));
+              vals = extractProductivity(data.text || '');
+              if (vals) break;
+            }
           } finally {
             URL.revokeObjectURL(url);
           }
@@ -330,7 +381,7 @@
         } else if (failed) {
           setProdStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
         } else {
-          setProdStatus('数字を読み取れませんでした。表が大きく写るように撮るか、手入力してください。');
+          setProdStatus('数字を読み取れませんでした。表の部分だけを大きく撮り直すか、手入力してください。');
         }
         setProdBusy(false);
       };
@@ -664,7 +715,7 @@
                 }}>
                   <div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginBottom: 6 }}>📷 写真から読み取る</div>
                   <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
-                    日次生産性管理シートの写真を選ぶと、5つの指標の予算・実績を自動で入れます。達成・未達は自動で判定します（労働時間は実績が予算以下で達成）。写真は端末の中で処理され、外部には送られません。
+                    日次生産性管理シートの写真を選ぶと、5つの指標の予算・実績を自動で入れます。達成・未達は自動で判定します（労働時間は実績が予算以下で達成）。表の部分だけを大きく撮ると読み取りやすくなります。写真は端末の中で処理され、外部には送られません。
                   </div>
                   <label style={{
                       display: 'block', width: '100%', padding: '13px 18px', boxSizing: 'border-box',
