@@ -147,7 +147,7 @@
     // 日次生産性シートのOCRテキストから、5指標×（予算・実績）の10個の数字を取り出す。
     // 「売上高÷労働時間≒人時売上高」「POS粗利÷労働時間≒人時生産性」の関係で照合し、
     // グラフの目盛りなどの紛らわしい数字を除外する。
-    const extractProductivity = (text) => {
+    const extractNumTokens = (text) => {
       const t = String(text || '')
         .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
         .replace(/，/g, ',');
@@ -158,6 +158,11 @@
         const v = parseInt(m[0].replace(/,/g, ''), 10);
         if (!isNaN(v)) vals.push(v);
       }
+      return vals;
+    };
+
+    const extractProductivity = (text) => {
+      const vals = extractNumTokens(text);
       const near = (x, y) => Math.abs(x - y) <= y * 0.004 + 2;
       const checksFor = (w) => [
         near(w[4] / w[8], w[0]),
@@ -192,10 +197,12 @@
 
     // 写真をOCR向けに整える（幅をそろえてグレースケール化、必要なら白黒化）
     const makeOcrCanvas = (img, targetW, binarize) => {
-      const scale = targetW / (img.naturalWidth || targetW);
+      const iw = img.naturalWidth || img.width || targetW;
+      const ih = img.naturalHeight || img.height || targetW;
+      const scale = targetW / iw;
       const cv = document.createElement('canvas');
-      cv.width = Math.round(img.naturalWidth * scale);
-      cv.height = Math.round(img.naturalHeight * scale);
+      cv.width = Math.round(iw * scale);
+      cv.height = Math.round(ih * scale);
       const ctx = cv.getContext('2d');
       ctx.drawImage(img, 0, 0, cv.width, cv.height);
       const id = ctx.getImageData(0, 0, cv.width, cv.height);
@@ -346,21 +353,36 @@
         let worker = null;
         let vals = null;
         let failed = false;
+        let bestTokens = [];
         try {
           worker = await Tesseract.createWorker('eng');
           const url = URL.createObjectURL(file);
           try {
-            const img = await new Promise((res, rej) => {
-              const im = new Image();
-              im.onload = () => res(im);
-              im.onerror = rej;
-              im.src = url;
-            });
-            // 拡大＋グレースケール＋白黒化で読む。ダメなら白黒化なしでも試す
-            for (const binarize of [true, false]) {
-              await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: '11' });
-              const { data } = await worker.recognize(makeOcrCanvas(img, 2600, binarize));
-              vals = extractProductivity(data.text || '');
+            let img = null;
+            try {
+              img = await createImageBitmap(file, { imageOrientation: 'from-image' });
+            } catch (e) {
+              img = await new Promise((res, rej) => {
+                const im = new Image();
+                im.onload = () => res(im);
+                im.onerror = rej;
+                im.src = url;
+              });
+            }
+            // 読み方を変えて最大3回試す（白黒化→グレースケール→白黒化＋ブロック読み）
+            const attempts = [
+              { binarize: true, psm: '11' },
+              { binarize: false, psm: '11' },
+              { binarize: true, psm: '6' },
+            ];
+            for (let k = 0; k < attempts.length; k++) {
+              if (k > 0) setProdStatus(`読み取り中…（${k + 1}回目の方法で試しています）`);
+              await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: attempts[k].psm });
+              const { data } = await worker.recognize(makeOcrCanvas(img, 2600, attempts[k].binarize));
+              const text = data.text || '';
+              const toks = extractNumTokens(text);
+              if (toks.length > bestTokens.length) bestTokens = toks;
+              vals = extractProductivity(text);
               if (vals) break;
             }
           } finally {
@@ -381,7 +403,7 @@
         } else if (failed) {
           setProdStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
         } else {
-          setProdStatus('数字を読み取れませんでした。表の部分だけを大きく撮り直すか、手入力してください。');
+          setProdStatus('数字を読み取れませんでした。表の部分だけを大きく撮り直すか、手入力してください。' + (bestTokens.length ? `\n（読み取れた数字：${bestTokens.slice(0, 14).join('、')}）` : '\n（数字が1つも読み取れませんでした）'));
         }
         setProdBusy(false);
       };
