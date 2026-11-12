@@ -192,11 +192,57 @@
           }
         }
       }
-      return null;
+      // 大きな金額が途中で分かれて読まれた場合：断片をつなぎ直し、関係式に最も合う組み合わせを探す
+      const groupCands = (frags) => {
+        const s = frags.map(String).join('');
+        const out = [];
+        if (s.length === 7) out.push(parseInt(s, 10));
+        else if (s.length === 6) { for (let d = 1; d <= 9; d++) out.push(parseInt(d + s, 10)); }
+        else if (s.length === 8) { out.push(parseInt(s.slice(0, 7), 10)); out.push(parseInt(s.slice(1), 10)); }
+        return out;
+      };
+      let best = null;
+      for (let s = 0; s + 6 <= vals.length; s++) {
+        const a = vals[s], b = vals[s + 1], c = vals[s + 2], d = vals[s + 3];
+        if ([a, b, c, d].some((v) => v < 500 || v > 99999)) continue;
+        for (let e = s + 5; e + 2 <= vals.length; e++) {
+          const h1 = vals[e], h2 = vals[e + 1];
+          if (h1 < 100 || h1 > 999 || h2 < 100 || h2 > 999) continue;
+          const frags = vals.slice(s + 4, e);
+          if (frags.length < 4 || frags.length > 9) continue;
+          const expected = [a * h1, b * h2, c * h1, d * h2];
+          if (expected.some((v) => v < 500000)) continue;
+          const n = frags.length;
+          for (let i1 = 1; i1 <= n - 3; i1++)
+          for (let i2 = i1 + 1; i2 <= n - 2; i2++)
+          for (let i3 = i2 + 1; i3 <= n - 1; i3++) {
+            const groups = [frags.slice(0, i1), frags.slice(i1, i2), frags.slice(i2, i3), frags.slice(i3)];
+            const candSets = groups.map(groupCands);
+            if (candSets.some((cs) => cs.length === 0)) continue;
+            let totalErr = 0;
+            const picked = [];
+            let ok = true;
+            for (let j = 0; j < 4; j++) {
+              let bj = null, be = Infinity;
+              for (const cand of candSets[j]) {
+                const err = Math.abs(cand - expected[j]) / expected[j];
+                if (err < be) { be = err; bj = cand; }
+              }
+              if (be > 0.004) { ok = false; break; }
+              totalErr += be;
+              picked.push(bj);
+            }
+            if (ok && (!best || totalErr < best.totalErr)) {
+              best = { totalErr, w: [a, b, c, d, picked[0], picked[1], picked[2], picked[3], h1, h2] };
+            }
+          }
+        }
+      }
+      return best ? best.w : null;
     };
 
-    // 写真をOCR向けに整える（幅をそろえてグレースケール化、必要なら白黒化）
-    const makeOcrCanvas = (img, targetW, binarize) => {
+    // 写真をOCR向けに整える（幅をそろえてグレースケール化、mode: binary=白黒化 / norm=コントラスト強調 / gray=そのまま）
+    const makeOcrCanvas = (img, targetW, mode) => {
       const iw = img.naturalWidth || img.width || targetW;
       const ih = img.naturalHeight || img.height || targetW;
       const scale = targetW / iw;
@@ -207,9 +253,18 @@
       ctx.drawImage(img, 0, 0, cv.width, cv.height);
       const id = ctx.getImageData(0, 0, cv.width, cv.height);
       const d = id.data;
-      for (let i = 0; i < d.length; i += 4) {
-        let g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        if (binarize) g = g > 170 ? 255 : 0;
+      const gray = new Float32Array(d.length / 4);
+      let mn = 255, mx = 0;
+      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+        const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        gray[j] = g;
+        if (g < mn) mn = g;
+        if (g > mx) mx = g;
+      }
+      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+        let g = gray[j];
+        if (mode === 'binary') g = g > 170 ? 255 : 0;
+        else if (mode === 'norm' && mx > mn) g = (g - mn) * 255 / (mx - mn);
         d[i] = g; d[i + 1] = g; d[i + 2] = g;
       }
       ctx.putImageData(id, 0, 0);
@@ -297,7 +352,7 @@
           // 2回目：拡大＋グレースケールで読む（取りこぼしがあるときだけ）
           if (!results.sales || !results.profit) {
             setOcrStatus('読み取り中…（別の方法でもう一度読み取っています）');
-            await runPass((img) => makeOcrCanvas(img, 2600, false), '11');
+            await runPass((img) => makeOcrCanvas(img, 2600, 'gray'), '11');
           }
         } catch (e) {
           failed = true;
@@ -369,16 +424,16 @@
                 im.src = url;
               });
             }
-            // 読み方を変えて最大3回試す（白黒化→グレースケール→白黒化＋ブロック読み）
+            // 読み方を変えて最大3回試す（白黒化→コントラスト強調→グレースケール）
             const attempts = [
-              { binarize: true, psm: '11' },
-              { binarize: false, psm: '11' },
-              { binarize: true, psm: '6' },
+              { mode: 'binary', w: 2600, psm: '11' },
+              { mode: 'norm', w: 3400, psm: '11' },
+              { mode: 'gray', w: 2600, psm: '11' },
             ];
             for (let k = 0; k < attempts.length; k++) {
               if (k > 0) setProdStatus(`読み取り中…（${k + 1}回目の方法で試しています）`);
               await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: attempts[k].psm });
-              const { data } = await worker.recognize(makeOcrCanvas(img, 2600, attempts[k].binarize));
+              const { data } = await worker.recognize(makeOcrCanvas(img, attempts[k].w, attempts[k].mode));
               const text = data.text || '';
               const toks = extractNumTokens(text);
               if (toks.length > bestTokens.length) bestTokens = toks;
