@@ -190,7 +190,7 @@
       );
 
       // 業務報告（前回データがあれば復元）
-      const [workBaseDate, setWorkBaseDate] = useState(savedWork.workBaseDate || todayStr());
+      const [workBaseDate, setWorkBaseDate] = useState(todayStr()); // 開いた日を必ず基準日にする（保存済みの日付は使わない）
       const [salesAmount, setSalesAmount] = useState(savedWork.salesAmount || '');
       const [salesIsMinus, setSalesIsMinus] = useState(savedWork.salesIsMinus !== undefined ? savedWork.salesIsMinus : true);
       const [salesPercent, setSalesPercent] = useState(savedWork.salesPercent || '');
