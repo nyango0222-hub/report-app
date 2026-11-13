@@ -27,7 +27,6 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -86,229 +85,6 @@
     // 写真OCR（売上予実画面の読み取り）
     // ============================================================
     // OCRテキストから金額（カンマ区切り）と％を出現順に取り出す
-    const extractNums = (text) => {
-      const t = String(text || '')
-        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-        .replace(/，/g, ',').replace(/．/g, '.');
-      const amounts = [];
-      const aRe = /\d{1,3}(?:,\d{3})+|\d{4,}/g;
-      let m;
-      while ((m = aRe.exec(t)) !== null) {
-        const v = parseInt(m[0].replace(/,/g, ''), 10);
-        if (!isNaN(v)) amounts.push({ v, i: m.index });
-      }
-      const percents = [];
-      const pRe = /(\d{1,3}\.\d{1,2})\s*%/g;
-      while ((m = pRe.exec(t)) !== null) {
-        percents.push({ v: parseFloat(m[1]), raw: m[1], i: m.index });
-      }
-      return { amounts, percents };
-    };
-
-    // 金額列から「実績・予実差・予実比」の組を探す。
-    // 予実比 = 実績 / 予算、予算 = 実績 - 予実差、の関係で照合する。
-    // 逆算した予算が金額列にも載っている組を「売上側」、載っていない組を「粗利側」と判定する。
-    const findTriples = (text) => {
-      const { amounts, percents } = extractNums(text);
-      const best = {};
-      for (let a = 0; a < amounts.length; a++) {
-        for (let b = 0; b < amounts.length; b++) {
-          if (b === a) continue;
-          const actual = amounts[a].v, diffAbs = amounts[b].v;
-          if (actual <= 0 || diffAbs <= 0 || diffAbs >= actual) continue;
-          for (const sgn of [-1, 1]) {
-            const diff = sgn * diffAbs;
-            const budget = actual - diff;
-            if (budget <= 0) continue;
-            const ratio = actual / budget * 100;
-            for (const p of percents) {
-              const err = Math.abs(p.v - ratio);
-              if (err > 0.02) continue;
-              const side = amounts.some((x) => x.v === budget) ? 'sales' : 'profit';
-              if (!best[side] || err < best[side].err) {
-                best[side] = { actual, diff, percent: p.raw, err };
-              }
-            }
-          }
-        }
-      }
-      // 売上側の数字の組み合わせ違いでできた粗利候補を除く
-      // （粗利の実績が売上の予算と一致する／予実差が売上と同一、の場合は売上の誤検出）
-      if (best.sales && best.profit) {
-        const sBudget = best.sales.actual - best.sales.diff;
-        if (best.profit.actual === sBudget || best.profit.diff === best.sales.diff) {
-          delete best.profit;
-        }
-      }
-      return best;
-    };
-
-
-    // 日次生産性シートのOCRテキストから、5指標×（予算・実績）の10個の数字を取り出す。
-    // 「売上高÷労働時間≒人時売上高」「POS粗利÷労働時間≒人時生産性」の関係で照合し、
-    // グラフの目盛りなどの紛らわしい数字を除外する。
-    const extractNumTokens = (text) => {
-      const t = String(text || '')
-        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-        .replace(/，/g, ',');
-      const vals = [];
-      const re = /\d{1,3}(?:,\d{3})+|\d{3,}/g;
-      let m;
-      while ((m = re.exec(t)) !== null) {
-        const v = parseInt(m[0].replace(/,/g, ''), 10);
-        if (!isNaN(v)) vals.push(v);
-      }
-      return vals;
-    };
-
-    const extractProductivity = (text) => {
-      const vals = extractNumTokens(text);
-      const near = (x, y) => Math.abs(x - y) <= y * 0.004 + 2;
-      const checksFor = (w) => [
-        near(w[4] / w[8], w[0]),
-        near(w[5] / w[9], w[1]),
-        near(w[6] / w[8], w[2]),
-        near(w[7] / w[9], w[3]),
-      ];
-      // 先頭の桁が読み落ちた数字（例：3,462→462）を、関係式が合う形に直す候補
-      const repairs = (v) => {
-        const out = [];
-        const s = String(v);
-        for (let d = 1; d <= 9; d++) out.push(d * Math.pow(10, s.length) + v);
-        return out;
-      };
-      for (let i = 0; i + 10 <= vals.length; i++) {
-        const w = vals.slice(i, i + 10);
-        if (w[8] <= 0 || w[9] <= 0) continue;
-        const c = checksFor(w);
-        if (c.every(Boolean)) return w;
-        const fails = c.map((ok, j) => ok ? -1 : j).filter((j) => j >= 0);
-        if (fails.length === 1) {
-          const j = fails[0];
-          // 直し方の候補：先頭の桁落ちを戻す／1桁置き換える／余分な1桁を落とす
-          const variants = (v) => {
-            const set = new Set(repairs(v));
-            const s = String(v);
-            for (let p = 0; p < s.length; p++) {
-              for (let d = 0; d <= 9; d++) {
-                if (String(d) === s[p]) continue;
-                const ns = s.slice(0, p) + d + s.slice(p + 1);
-                if (ns[0] !== '0') set.add(parseInt(ns, 10));
-              }
-              if (s.length > 4) {
-                const del = s.slice(0, p) + s.slice(p + 1);
-                if (del[0] !== '0') set.add(parseInt(del, 10));
-              }
-            }
-            return [...set];
-          };
-          // ずれているのは人時側とは限らないので、対応する金額側も直してみる
-          for (const pos of [j, 4 + j]) {
-            for (const cand of variants(w[pos])) {
-              const w2 = w.slice();
-              w2[pos] = cand;
-              if (checksFor(w2).every(Boolean)) return w2;
-            }
-          }
-        }
-      }
-      // 大きな金額が途中で分かれて読まれた場合：断片をつなぎ直し、関係式に最も合う組み合わせを探す
-      const groupCands = (frags) => {
-        const s = frags.map(String).join('');
-        const main = [];
-        if (s.length === 7) main.push(parseInt(s, 10));
-        else if (s.length === 6) { for (let d = 1; d <= 9; d++) main.push(parseInt(d + s, 10)); }
-        else if (s.length === 8) { main.push(parseInt(s.slice(0, 7), 10)); main.push(parseInt(s.slice(1), 10)); }
-        // 余分な1桁が混ざった場合（例：65278200→6278200）に備え、1桁落とした候補も出す
-        // ただし本命の候補が関係式に合うならそちらを優先する（予実の丸めで誤差が逆転することがあるため）
-        const del = [];
-        if (s.length >= 7 && s.length <= 8) {
-          for (let p = 1; p < s.length; p++) {
-            const dd = s.slice(0, p) + s.slice(p + 1);
-            if (dd.length >= 6) del.push(parseInt(dd, 10));
-          }
-        }
-        const mainU = [...new Set(main)];
-        return { main: mainU, del: [...new Set(del)].filter((v) => mainU.indexOf(v) < 0) };
-      };
-      let best = null;
-      for (let s = 0; s + 6 <= vals.length; s++) {
-        const a = vals[s], b = vals[s + 1], c = vals[s + 2], d = vals[s + 3];
-        if ([a, b, c, d].some((v) => v < 500 || v > 99999)) continue;
-        for (let e = s + 5; e + 2 <= vals.length; e++) {
-          const h1 = vals[e], h2 = vals[e + 1];
-          if (h1 < 100 || h1 > 999 || h2 < 100 || h2 > 999) continue;
-          const frags = vals.slice(s + 4, e);
-          if (frags.length < 4 || frags.length > 9) continue;
-          const expected = [a * h1, b * h2, c * h1, d * h2];
-          if (expected.some((v) => v < 500000)) continue;
-          const n = frags.length;
-          for (let i1 = 1; i1 <= n - 3; i1++)
-          for (let i2 = i1 + 1; i2 <= n - 2; i2++)
-          for (let i3 = i2 + 1; i3 <= n - 1; i3++) {
-            const groups = [frags.slice(0, i1), frags.slice(i1, i2), frags.slice(i2, i3), frags.slice(i3)];
-            const candSets = groups.map(groupCands);
-            if (candSets.some((cs) => cs.main.length + cs.del.length === 0)) continue;
-            let totalErr = 0;
-            const picked = [];
-            let ok = true;
-            for (let j = 0; j < 4; j++) {
-              let bj = null, be = Infinity;
-              for (const cand of candSets[j].main) {
-                const err = Math.abs(cand - expected[j]) / expected[j];
-                if (err < be) { be = err; bj = cand; }
-              }
-              if (be > 0.004) {
-                for (const cand of candSets[j].del) {
-                  const err = Math.abs(cand - expected[j]) / expected[j];
-                  if (err < be) { be = err; bj = cand; }
-                }
-              }
-              if (be > 0.004) { ok = false; break; }
-              totalErr += be;
-              picked.push(bj);
-            }
-            if (ok && (!best || totalErr < best.totalErr)) {
-              best = { totalErr, w: [a, b, c, d, picked[0], picked[1], picked[2], picked[3], h1, h2] };
-            }
-          }
-        }
-      }
-      return best ? best.w : null;
-    };
-
-    // 写真をOCR向けに整える（幅をそろえてグレースケール化、mode: binary=白黒化 / norm=コントラスト強調 / gray=そのまま）
-    const makeOcrCanvas = (img, targetW, mode, band) => {
-      const iw = img.naturalWidth || img.width || targetW;
-      const ih = img.naturalHeight || img.height || targetW;
-      const sy = band ? Math.floor(ih * band[0]) : 0;
-      const sh = band ? Math.floor(ih * (band[1] - band[0])) : ih;
-      const scale = targetW / iw;
-      const cv = document.createElement('canvas');
-      cv.width = Math.round(iw * scale);
-      cv.height = Math.round(sh * scale);
-      const ctx = cv.getContext('2d');
-      ctx.drawImage(img, 0, sy, iw, sh, 0, 0, cv.width, cv.height);
-      const id = ctx.getImageData(0, 0, cv.width, cv.height);
-      const d = id.data;
-      const gray = new Float32Array(d.length / 4);
-      let mn = 255, mx = 0;
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        gray[j] = g;
-        if (g < mn) mn = g;
-        if (g > mx) mx = g;
-      }
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        let g = gray[j];
-        if (mode === 'binary') g = g > 170 ? 255 : 0;
-        else if (mode === 'norm' && mx > mn) g = (g - mn) * 255 / (mx - mn);
-        d[i] = g; d[i + 1] = g; d[i + 2] = g;
-      }
-      ctx.putImageData(id, 0, 0);
-      return cv;
-    };
-
     // ============================================================
     // メインアプリ
     // ============================================================
@@ -339,169 +115,8 @@
       const [workActions, setWorkActions] = useState(savedWork.workActions || '');
       const [workOther, setWorkOther] = useState(savedWork.workOther || '');
 
-      // 写真OCR（業務報告の売上・粗利）
-      const ocrFileRef = useRef(null);
-      const [ocrBusy, setOcrBusy] = useState(false);
-      const [ocrStatus, setOcrStatus] = useState('');
-
-      const runPhotoOcr = async (files) => {
-        if (!window.Tesseract) {
-          setOcrStatus('読み取り用の部品を読み込めませんでした。通信環境を確認して、ページを開き直してください。');
-          return;
-        }
-        setOcrBusy(true);
-        setOcrStatus('読み取り中…（初回は少し時間がかかります）');
-        let worker = null;
-        const results = {};
-        let failed = false;
-        const loaded = [];
-        try {
-          worker = await Tesseract.createWorker('eng');
-          for (const file of files) {
-            const url = URL.createObjectURL(file);
-            const img = await new Promise((res, rej) => {
-              const im = new Image();
-              im.onload = () => res(im);
-              im.onerror = rej;
-              im.src = url;
-            });
-            loaded.push({ img, url });
-          }
-          const runPass = async (makeCanvas, psm) => {
-            await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: psm });
-            for (const { img } of loaded) {
-              if (results.sales && results.profit) break;
-              const { data } = await worker.recognize(makeCanvas(img));
-              const triples = findTriples(data.text || '');
-              for (const side of ['sales', 'profit']) {
-                if (triples[side] && !results[side]) results[side] = triples[side];
-              }
-            }
-          };
-          // 1回目：そのままの色で読む
-          await runPass((img) => {
-            const scale = Math.min(1, 1600 / (img.naturalWidth || 1600));
-            const cv = document.createElement('canvas');
-            cv.width = Math.round(img.naturalWidth * scale);
-            cv.height = Math.round(img.naturalHeight * scale);
-            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-            return cv;
-          }, '3');
-          // 2回目：拡大＋グレースケールで読む（取りこぼしがあるときだけ）
-          if (!results.sales || !results.profit) {
-            setOcrStatus('読み取り中…（別の方法でもう一度読み取っています）');
-            await runPass((img) => makeOcrCanvas(img, 2600, 'gray'), '11');
-          }
-        } catch (e) {
-          failed = true;
-        } finally {
-          for (const { url } of loaded) URL.revokeObjectURL(url);
-          if (worker) { try { await worker.terminate(); } catch (e) {} }
-        }
-        if (results.sales) {
-          setSalesAmount(String(Math.abs(results.sales.diff)));
-          setSalesIsMinus(results.sales.diff < 0);
-          setSalesPercent(results.sales.percent);
-        }
-        if (results.profit) {
-          setProfitAmount(String(Math.abs(results.profit.diff)));
-          setProfitIsMinus(results.profit.diff < 0);
-          setProfitPercent(results.profit.percent);
-        }
-        const lines = [];
-        if (results.sales) lines.push(`売上進捗：${results.sales.diff < 0 ? '▲' : ''}${fmtNum(Math.abs(results.sales.diff))}円　${results.sales.percent}％`);
-        if (results.profit) lines.push(`粗利進捗：${results.profit.diff < 0 ? '▲' : ''}${fmtNum(Math.abs(results.profit.diff))}円　${results.profit.percent}％`);
-        if (lines.length) {
-          setOcrStatus('読み取りました。画面の数字と合っているか見比べてください。\n' + lines.join('\n'));
-        } else if (failed) {
-          setOcrStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
-        } else {
-          setOcrStatus('数字を読み取れませんでした。画面いっぱいに大きく撮るか、手入力してください。');
-        }
-        setOcrBusy(false);
-      };
-
-      // 日次生産性（前日分）
-      const [dPerSalesB, setDPerSalesB] = useState(savedWork.dPerSalesB || '');
-      const [dPerSalesA, setDPerSalesA] = useState(savedWork.dPerSalesA || '');
-      const [dPerProfitB, setDPerProfitB] = useState(savedWork.dPerProfitB || '');
-      const [dPerProfitA, setDPerProfitA] = useState(savedWork.dPerProfitA || '');
-      const [dSalesB, setDSalesB] = useState(savedWork.dSalesB || '');
-      const [dSalesA, setDSalesA] = useState(savedWork.dSalesA || '');
-      const [dProfitB, setDProfitB] = useState(savedWork.dProfitB || '');
-      const [dProfitA, setDProfitA] = useState(savedWork.dProfitA || '');
-      const [dHoursB, setDHoursB] = useState(savedWork.dHoursB || '');
-      const [dHoursA, setDHoursA] = useState(savedWork.dHoursA || '');
-      const prodFileRef = useRef(null);
-      const [prodBusy, setProdBusy] = useState(false);
-      const [prodStatus, setProdStatus] = useState('');
-
-      const runProdOcr = async (file) => {
-        if (!window.Tesseract) {
-          setProdStatus('読み取り用の部品を読み込めませんでした。通信環境を確認して、ページを開き直してください。');
-          return;
-        }
-        setProdBusy(true);
-        setProdStatus('読み取り中…（初回は少し時間がかかります）');
-        let worker = null;
-        let vals = null;
-        let failed = false;
-        let bestTokens = [];
-        try {
-          worker = await Tesseract.createWorker('eng');
-          const url = URL.createObjectURL(file);
-          try {
-            let img = null;
-            try {
-              img = await createImageBitmap(file, { imageOrientation: 'from-image' });
-            } catch (e) {
-              img = await new Promise((res, rej) => {
-                const im = new Image();
-                im.onload = () => res(im);
-                im.onerror = rej;
-                im.src = url;
-              });
-            }
-            // 読み方を変えて最大5回試す（全体3通り→表の帯だけ切り取って2通り）
-            const attempts = [
-              { mode: 'binary', w: 2600, psm: '11' },
-              { mode: 'norm', w: 3400, psm: '11' },
-              { mode: 'gray', w: 2600, psm: '11' },
-              { mode: 'binary', w: 2600, psm: '11', band: [0.30, 0.72] },
-              { mode: 'gray', w: 3200, psm: '11', band: [0.24, 0.80] },
-            ];
-            for (let k = 0; k < attempts.length; k++) {
-              if (k > 0) setProdStatus(`読み取り中…（${k + 1}回目の方法で試しています）`);
-              await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: attempts[k].psm });
-              const { data } = await worker.recognize(makeOcrCanvas(img, attempts[k].w, attempts[k].mode, attempts[k].band));
-              const text = data.text || '';
-              const toks = extractNumTokens(text);
-              if (toks.length > bestTokens.length) bestTokens = toks;
-              vals = extractProductivity(text);
-              if (vals) break;
-            }
-          } finally {
-            URL.revokeObjectURL(url);
-          }
-        } catch (e) {
-          failed = true;
-        } finally {
-          if (worker) { try { await worker.terminate(); } catch (e) {} }
-        }
-        if (vals) {
-          setDPerSalesB(String(vals[0])); setDPerSalesA(String(vals[1]));
-          setDPerProfitB(String(vals[2])); setDPerProfitA(String(vals[3]));
-          setDSalesB(String(vals[4])); setDSalesA(String(vals[5]));
-          setDProfitB(String(vals[6])); setDProfitA(String(vals[7]));
-          setDHoursB(String(vals[8])); setDHoursA(String(vals[9]));
-          setProdStatus('読み取りました。画面の数字と合っているか見比べてください。');
-        } else if (failed) {
-          setProdStatus('読み取りでエラーが出ました。写真を選び直すか、手入力してください。');
-        } else {
-          setProdStatus('数字を読み取れませんでした。表の部分だけを大きく撮り直すか、手入力してください。' + (bestTokens.length ? `\n（読み取れた数字：${bestTokens.slice(0, 14).join('、')}）` : '\n（数字が1つも読み取れませんでした）'));
-        }
-        setProdBusy(false);
-      };
+      // 日次生産性（前日分）：Claudeにまとめてもらった文章を貼り付ける
+      const [dProdText, setDProdText] = useState(savedWork.dProdText || '');
 
       // リサージ（前回データがあれば復元）
       const [lStartDate, setLStartDate] = useState(savedLissage.lStartDate || todayStr());
@@ -519,13 +134,11 @@
         saveLS(LS_WORK, {
           workBaseDate, salesAmount, salesIsMinus, salesPercent,
           profitAmount, profitIsMinus, profitPercent, workActions, workOther,
-          dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA,
-          dProfitB, dProfitA, dHoursB, dHoursA,
+          dProdText,
         });
       }, [workBaseDate, salesAmount, salesIsMinus, salesPercent,
           profitAmount, profitIsMinus, profitPercent, workActions, workOther,
-          dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA,
-          dProfitB, dProfitA, dHoursB, dHoursA]);
+          dProdText]);
 
       // リサージデータを自動保存
       useEffect(() => {
@@ -542,10 +155,7 @@
         setSalesAmount(''); setSalesIsMinus(true); setSalesPercent('');
         setProfitAmount(''); setProfitIsMinus(true); setProfitPercent('');
         setWorkActions(''); setWorkOther('');
-        setDPerSalesB(''); setDPerSalesA(''); setDPerProfitB(''); setDPerProfitA('');
-        setDSalesB(''); setDSalesA(''); setDProfitB(''); setDProfitA('');
-        setDHoursB(''); setDHoursA('');
-        setOcrStatus(''); setProdStatus('');
+        setDProdText('');
         clearLS(LS_WORK);
       };
 
@@ -573,29 +183,8 @@
         return { start, end };
       }, [workBaseDate]);
 
-      // 日次生産性ブロック（10項目すべて入っているときだけ生成）
-      const buildProductivityText = () => {
-        if (!workPeriod) return '';
-        const raw = [dPerSalesB, dPerSalesA, dPerProfitB, dPerProfitA, dSalesB, dSalesA, dProfitB, dProfitA, dHoursB, dHoursA];
-        const nums = raw.map((s) => parseInt(String(s).replace(/,/g, ''), 10));
-        if (nums.some((n) => isNaN(n))) return '';
-        const judge = (b, a, lowerBetter) => ((lowerBetter ? a <= b : a >= b) ? '達成！' : '未達');
-        const wd = ['日', '月', '火', '水', '木', '金', '土'][workPeriod.end.getDay()];
-        const lines = [
-          `(前日)日次生産性-${fmtMD(workPeriod.end)}(${wd})`,
-          '【人時売上高】',
-          `予算${fmtNum(nums[0])}円　実績${fmtNum(nums[1])}円　${judge(nums[0], nums[1], false)}`,
-          '【人時生産性】',
-          `予算${fmtNum(nums[2])}円　実績${fmtNum(nums[3])}円　${judge(nums[2], nums[3], false)}`,
-          '【売上高】',
-          `予算${fmtNum(nums[4])}円　実績${fmtNum(nums[5])}円　${judge(nums[4], nums[5], false)}`,
-          '【POS粗利】',
-          `予算${fmtNum(nums[6])}円　実績${fmtNum(nums[7])}円　${judge(nums[6], nums[7], false)}`,
-          '【労働時間】',
-          `予算${fmtNum(nums[8])}時間　実績${fmtNum(nums[9])}時間　${judge(nums[8], nums[9], true)}`,
-        ];
-        return lines.join('\n');
-      };
+      // 日次生産性ブロック（貼り付けた文章があれば、そのまま入れる）
+      const buildProductivityText = () => dProdText.trim();
 
       // 文章生成
       const generateWork = () => {
@@ -783,28 +372,6 @@
                   )}
                 </div>
 
-                                <div style={{
-                  marginBottom: 22, padding: '14px 16px', background: '#fff',
-                  border: `1.5px dashed ${C.navy}`, borderRadius: 10,
-                }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginBottom: 6 }}>📷 写真から読み取る</div>
-                  <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
-                    売上予実の画面写真を選ぶと、売上・粗利の予実差と予実比を自動で入れます（売上側・粗利側の2枚でも、まとめて1枚でもOK）。写真は端末の中で処理され、外部には送られません。送信前に、画面の数字と合っているか必ず見比べてください。
-                  </div>
-                  <label style={{
-                      display: 'block', width: '100%', padding: '13px 18px', boxSizing: 'border-box',
-                      background: ocrBusy ? C.inkSoft : C.navy, color: '#fff', borderRadius: 10,
-                      fontSize: 15, fontWeight: 700, textAlign: 'center', cursor: 'pointer',
-                    }}>
-                    {ocrBusy ? '読み取り中…' : '写真を選ぶ'}
-                    <input type="file" accept="image/*" multiple style={{ display: 'none' }} disabled={ocrBusy}
-                      onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) runPhotoOcr(fs); }} />
-                  </label>
-                  {ocrStatus && (
-                    <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{ocrStatus}</div>
-                  )}
-                </div>
-
                 <div style={sectionTitle()}>売上進捗</div>
                 <NumberRow label="金額" value={salesAmount} onChange={setSalesAmount}
                   isMinus={salesIsMinus} onToggleMinus={() => setSalesIsMinus(!salesIsMinus)}
@@ -825,44 +392,12 @@
                     onChange={(e) => setProfitPercent(e.target.value)} style={inputStyle} placeholder="93.82" />
                 </div>
 
-                                <div style={sectionTitle({ marginTop: 26 })}>日次生産性（前日分）</div>
-                <div style={{
-                  marginBottom: 14, padding: '14px 16px', background: '#fff',
-                  border: `1.5px dashed ${C.navy}`, borderRadius: 10,
-                }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginBottom: 6 }}>📷 写真から読み取る</div>
-                  <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
-                    日次生産性管理シートの写真を選ぶと、5つの指標の予算・実績を自動で入れます。達成・未達は自動で判定します（労働時間は実績が予算以下で達成）。表の部分だけを大きく撮ると読み取りやすくなります。写真は端末の中で処理され、外部には送られません。
-                  </div>
-                  <label style={{
-                      display: 'block', width: '100%', padding: '13px 18px', boxSizing: 'border-box',
-                      background: prodBusy ? C.inkSoft : C.navy, color: '#fff', borderRadius: 10,
-                      fontSize: 15, fontWeight: 700, textAlign: 'center', cursor: 'pointer',
-                    }}>
-                    {prodBusy ? '読み取り中…' : '写真を選ぶ'}
-                    <input type="file" accept="image/*" style={{ display: 'none' }} disabled={prodBusy}
-                      onChange={(e) => { const f = (e.target.files || [])[0]; e.target.value = ''; if (f) runProdOcr(f); }} />
-                  </label>
-                  {prodStatus && (
-                    <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: C.ink }}>{prodStatus}</div>
-                  )}
-                </div>
-                {[
-                  ['人時売上高', dPerSalesB, setDPerSalesB, dPerSalesA, setDPerSalesA, '円'],
-                  ['人時生産性', dPerProfitB, setDPerProfitB, dPerProfitA, setDPerProfitA, '円'],
-                  ['売上高', dSalesB, setDSalesB, dSalesA, setDSalesA, '円'],
-                  ['POS粗利', dProfitB, setDProfitB, dProfitA, setDProfitA, '円'],
-                  ['労働時間', dHoursB, setDHoursB, dHoursA, setDHoursA, '時間'],
-                ].map(([label, b, setB, a, setA, unit]) => (
-                  <div key={label} style={{ marginBottom: 10 }}>
-                    <label style={labelStyle}>{label}（{unit}）</label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <input type="text" inputMode="numeric" value={b} onChange={(e) => setB(e.target.value)} style={inputStyle} placeholder="予算" />
-                      <input type="text" inputMode="numeric" value={a} onChange={(e) => setA(e.target.value)} style={inputStyle} placeholder="実績" />
-                    </div>
-                  </div>
-                ))}
-                <div style={{ fontSize: 11, color: C.inkSoft }}>10項目すべて入ると、文章に日次生産性のブロックが入ります。</div>
+                <div style={sectionTitle({ marginTop: 26 })}>日次生産性（前日分）</div>
+                <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Claudeにシートの写真を送ってまとめてもらった文章を、そのまま貼ってください（空欄なら文章に入りません）</div>
+                <textarea value={dProdText} onChange={(e) => setDProdText(e.target.value)}
+                  placeholder={"(前日)日次生産性-11/12(木)\n【人時売上高】\n予算16,371円　実績16,400円　達成！\n【人時生産性】\n予算3,435円　実績3,223円　未達\n…"}
+                  rows={10}
+                  style={{ ...inputStyle, height: 'auto', padding: 14, resize: 'vertical', lineHeight: 1.7 }} />
 
                 <div style={sectionTitle({ marginTop: 26 })}>実施したこと</div>
                 <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>1行=1項目（「・」は自動付与）</div>
