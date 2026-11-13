@@ -184,33 +184,52 @@
         if (c.every(Boolean)) return w;
         const fails = c.map((ok, j) => ok ? -1 : j).filter((j) => j >= 0);
         if (fails.length === 1) {
-          const pos = fails[0];
-          // 直し方の候補：先頭の桁落ちを戻す／1桁だけ別の数字に置き換える（例：18501→16501）
-          const candSet = new Set(repairs(w[pos]));
-          const s = String(w[pos]);
-          for (let i = 0; i < s.length; i++) {
-            for (let d = 0; d <= 9; d++) {
-              if (String(d) === s[i]) continue;
-              const ns = s.slice(0, i) + d + s.slice(i + 1);
-              if (ns[0] === '0') continue;
-              candSet.add(parseInt(ns, 10));
+          const j = fails[0];
+          // 直し方の候補：先頭の桁落ちを戻す／1桁置き換える／余分な1桁を落とす
+          const variants = (v) => {
+            const set = new Set(repairs(v));
+            const s = String(v);
+            for (let p = 0; p < s.length; p++) {
+              for (let d = 0; d <= 9; d++) {
+                if (String(d) === s[p]) continue;
+                const ns = s.slice(0, p) + d + s.slice(p + 1);
+                if (ns[0] !== '0') set.add(parseInt(ns, 10));
+              }
+              if (s.length > 4) {
+                const del = s.slice(0, p) + s.slice(p + 1);
+                if (del[0] !== '0') set.add(parseInt(del, 10));
+              }
             }
-          }
-          for (const cand of candSet) {
-            const w2 = w.slice();
-            w2[pos] = cand;
-            if (checksFor(w2).every(Boolean)) return w2;
+            return [...set];
+          };
+          // ずれているのは人時側とは限らないので、対応する金額側も直してみる
+          for (const pos of [j, 4 + j]) {
+            for (const cand of variants(w[pos])) {
+              const w2 = w.slice();
+              w2[pos] = cand;
+              if (checksFor(w2).every(Boolean)) return w2;
+            }
           }
         }
       }
       // 大きな金額が途中で分かれて読まれた場合：断片をつなぎ直し、関係式に最も合う組み合わせを探す
       const groupCands = (frags) => {
         const s = frags.map(String).join('');
-        const out = [];
-        if (s.length === 7) out.push(parseInt(s, 10));
-        else if (s.length === 6) { for (let d = 1; d <= 9; d++) out.push(parseInt(d + s, 10)); }
-        else if (s.length === 8) { out.push(parseInt(s.slice(0, 7), 10)); out.push(parseInt(s.slice(1), 10)); }
-        return out;
+        const main = [];
+        if (s.length === 7) main.push(parseInt(s, 10));
+        else if (s.length === 6) { for (let d = 1; d <= 9; d++) main.push(parseInt(d + s, 10)); }
+        else if (s.length === 8) { main.push(parseInt(s.slice(0, 7), 10)); main.push(parseInt(s.slice(1), 10)); }
+        // 余分な1桁が混ざった場合（例：65278200→6278200）に備え、1桁落とした候補も出す
+        // ただし本命の候補が関係式に合うならそちらを優先する（予実の丸めで誤差が逆転することがあるため）
+        const del = [];
+        if (s.length >= 7 && s.length <= 8) {
+          for (let p = 1; p < s.length; p++) {
+            const dd = s.slice(0, p) + s.slice(p + 1);
+            if (dd.length >= 6) del.push(parseInt(dd, 10));
+          }
+        }
+        const mainU = [...new Set(main)];
+        return { main: mainU, del: [...new Set(del)].filter((v) => mainU.indexOf(v) < 0) };
       };
       let best = null;
       for (let s = 0; s + 6 <= vals.length; s++) {
@@ -229,15 +248,21 @@
           for (let i3 = i2 + 1; i3 <= n - 1; i3++) {
             const groups = [frags.slice(0, i1), frags.slice(i1, i2), frags.slice(i2, i3), frags.slice(i3)];
             const candSets = groups.map(groupCands);
-            if (candSets.some((cs) => cs.length === 0)) continue;
+            if (candSets.some((cs) => cs.main.length + cs.del.length === 0)) continue;
             let totalErr = 0;
             const picked = [];
             let ok = true;
             for (let j = 0; j < 4; j++) {
               let bj = null, be = Infinity;
-              for (const cand of candSets[j]) {
+              for (const cand of candSets[j].main) {
                 const err = Math.abs(cand - expected[j]) / expected[j];
                 if (err < be) { be = err; bj = cand; }
+              }
+              if (be > 0.004) {
+                for (const cand of candSets[j].del) {
+                  const err = Math.abs(cand - expected[j]) / expected[j];
+                  if (err < be) { be = err; bj = cand; }
+                }
               }
               if (be > 0.004) { ok = false; break; }
               totalErr += be;
@@ -253,15 +278,17 @@
     };
 
     // 写真をOCR向けに整える（幅をそろえてグレースケール化、mode: binary=白黒化 / norm=コントラスト強調 / gray=そのまま）
-    const makeOcrCanvas = (img, targetW, mode) => {
+    const makeOcrCanvas = (img, targetW, mode, band) => {
       const iw = img.naturalWidth || img.width || targetW;
       const ih = img.naturalHeight || img.height || targetW;
+      const sy = band ? Math.floor(ih * band[0]) : 0;
+      const sh = band ? Math.floor(ih * (band[1] - band[0])) : ih;
       const scale = targetW / iw;
       const cv = document.createElement('canvas');
       cv.width = Math.round(iw * scale);
-      cv.height = Math.round(ih * scale);
+      cv.height = Math.round(sh * scale);
       const ctx = cv.getContext('2d');
-      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, sy, iw, sh, 0, 0, cv.width, cv.height);
       const id = ctx.getImageData(0, 0, cv.width, cv.height);
       const d = id.data;
       const gray = new Float32Array(d.length / 4);
@@ -435,16 +462,18 @@
                 im.src = url;
               });
             }
-            // 読み方を変えて最大3回試す（白黒化→コントラスト強調→グレースケール）
+            // 読み方を変えて最大5回試す（全体3通り→表の帯だけ切り取って2通り）
             const attempts = [
               { mode: 'binary', w: 2600, psm: '11' },
               { mode: 'norm', w: 3400, psm: '11' },
               { mode: 'gray', w: 2600, psm: '11' },
+              { mode: 'binary', w: 2600, psm: '11', band: [0.30, 0.72] },
+              { mode: 'gray', w: 3200, psm: '11', band: [0.24, 0.80] },
             ];
             for (let k = 0; k < attempts.length; k++) {
               if (k > 0) setProdStatus(`読み取り中…（${k + 1}回目の方法で試しています）`);
               await worker.setParameters({ tessedit_char_whitelist: '0123456789,.%-', tessedit_pageseg_mode: attempts[k].psm });
-              const { data } = await worker.recognize(makeOcrCanvas(img, attempts[k].w, attempts[k].mode));
+              const { data } = await worker.recognize(makeOcrCanvas(img, attempts[k].w, attempts[k].mode, attempts[k].band));
               const text = data.text || '';
               const toks = extractNumTokens(text);
               if (toks.length > bestTokens.length) bestTokens = toks;
