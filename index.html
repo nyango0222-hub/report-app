@@ -128,6 +128,7 @@
       const [lSkinMen, setLSkinMen] = useState(savedLissage.lSkinMen || '');
       const [lReflection, setLReflection] = useState(savedLissage.lReflection || '');
       const [lNextWeek, setLNextWeek] = useState(savedLissage.lNextWeek || '');
+      const [lNextAppt, setLNextAppt] = useState(savedLissage.lNextAppt || '');
 
       // 業務報告データを自動保存
       useEffect(() => {
@@ -144,10 +145,10 @@
       useEffect(() => {
         saveLS(LS_LISSAGE, {
           lStartDate, lEndDate, lPeriodAmount, lCallOut, lPre,
-          l3AC, lSkinMen, lReflection, lNextWeek,
+          l3AC, lSkinMen, lReflection, lNextWeek, lNextAppt,
         });
       }, [lStartDate, lEndDate, lPeriodAmount, lCallOut, lPre,
-          l3AC, lSkinMen, lReflection, lNextWeek]);
+          l3AC, lSkinMen, lReflection, lNextWeek, lNextAppt]);
 
       // 業務報告フォームをリセット
       const resetWork = () => {
@@ -163,7 +164,7 @@
       const resetLissage = () => {
         setLStartDate(todayStr()); setLEndDate(todayStr());
         setLPeriodAmount(''); setLCallOut(''); setLPre('');
-        setL3AC(''); setLSkinMen(''); setLReflection(''); setLNextWeek('');
+        setL3AC(''); setLSkinMen(''); setLReflection(''); setLNextWeek(''); setLNextAppt('');
         clearLS(LS_LISSAGE);
       };
 
@@ -210,7 +211,7 @@
         const period = `${fmtMD(s)}〜${fmtMD(e)}`;
         const ref = lReflection.split('\n').map(l => l.trim()).filter(Boolean).map(l => `・${l}`).join('\n');
         const nw = lNextWeek.split('\n').map(l => l.trim()).filter(Boolean).map(l => `・${l}`).join('\n');
-        return `リサージ活動報告です。\n${period}\n期間実績${fmtNum(lPeriodAmount)}円\n【活動】\n声掛け${lCallOut || 0}人\nプレ${lPre || 0}人\n3AC${l3AC || 0}人\nスキメン新規${lSkinMen || 0}人\n【振り返りと反省】\n${ref}\n【次週】\n${nw}`;
+        return `リサージ活動報告です。\n${period}\n期間実績${fmtNum(lPeriodAmount)}円\n【活動】\n声掛け${lCallOut || 0}人\nプレ${lPre || 0}人\n3AC${l3AC || 0}人\nスキメン新規${lSkinMen || 0}人\n【振り返りと反省】\n${ref}\n【次週】\n${nw}\n次回お約束人数${lNextAppt || 0}人`;
       };
 
       const handleCopy = async () => {
@@ -461,6 +462,14 @@
                 <textarea value={lNextWeek} onChange={(e) => setLNextWeek(e.target.value)} rows={4}
                   style={{ ...inputStyle, height: 'auto', padding: 14, resize: 'vertical', lineHeight: 1.7 }}
                   placeholder="接客台にホワイトボードを乗せて毎日違う取り組みを記載" />
+
+                <div style={sectionTitle({ marginTop: 26 })}>次回お約束人数</div>
+                <div style={{ position: 'relative' }}>
+                  <input type="text" inputMode="numeric" value={fmtNum(lNextAppt)}
+                    onChange={(e) => setLNextAppt(e.target.value.replace(/[^\d]/g, ''))}
+                    style={{ ...inputStyle, paddingRight: 36 }} placeholder="0" />
+                  <span style={{ position: 'absolute', right: 14, top: 13, color: C.inkSoft, fontSize: 14 }}>人</span>
+                </div>
 
                 <FixedBottomButton color={C.rose} label="文章を生成" icon={<Icon.FileText />}
                   onClick={() => { setReportText(generateLissage()); setLastForm('lissage'); setSendStatus(null); setView('result'); }} />
