@@ -211,7 +211,7 @@
         const period = `${fmtMD(s)}〜${fmtMD(e)}`;
         const ref = lReflection.split('\n').map(l => l.trim()).filter(Boolean).map(l => `・${l}`).join('\n');
         const nw = lNextWeek.split('\n').map(l => l.trim()).filter(Boolean).map(l => `・${l}`).join('\n');
-        return `リサージ活動報告です。\n${period}\n期間実績${fmtNum(lPeriodAmount)}円\n【活動】\n声掛け${lCallOut || 0}人\nプレ${lPre || 0}人\n3AC${l3AC || 0}人\nスキメン新規${lSkinMen || 0}人\n【振り返りと反省】\n${ref}\n【次週】\n${nw}\n次回お約束人数${lNextAppt || 0}人`;
+        return `リサージ活動報告です。\n${period}\n期間実績${fmtNum(lPeriodAmount)}円\n【活動】\n声掛け${lCallOut || 0}人\nプレ${lPre || 0}人\n3AC${l3AC || 0}人\nスキメン新規${lSkinMen || 0}人\n【振り返りと反省】\n${ref}\n【次週】\n${nw}\n【次回お約束人数】\n${lNextAppt || 0}人`;
       };
 
       const handleCopy = async () => {
